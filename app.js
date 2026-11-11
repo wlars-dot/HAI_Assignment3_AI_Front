@@ -21,6 +21,8 @@ const startModal = document.getElementById("start-modal");
 const surveyModal = document.getElementById("survey-modal");
 const completeModal = document.getElementById("complete-modal");
 const generatedIdEl = document.getElementById("generated-participant-id");
+const participantNameInput = document.getElementById("participant-name-input");
+const startError = document.getElementById("start-error");
 const startStudyBtn = document.getElementById("start-study-btn");
 
 // Generate a random Participant ID immediately on load
@@ -33,9 +35,21 @@ function generateParticipantId() {
     return `P-${code}`;
 }
 
-participantId = generateParticipantId();
+const generatedUniqueId = generateParticipantId();
+participantId = generatedUniqueId;
 if (generatedIdEl) {
-    generatedIdEl.textContent = participantId;
+    generatedIdEl.textContent = generatedUniqueId;
+}
+
+// Helper: Fetch with timeout so UI never hangs if backend is asleep or offline
+async function fetchWithTimeout(url, options = {}, timeoutMs = 3000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+        clearTimeout(timer);
+    }
 }
 
 const progressBadge = document.getElementById("progress-badge");
@@ -80,9 +94,9 @@ function parseCSV(csvText) {
 async function loadStudyTrials() {
     let sampledRows = [];
 
-    // First try loading from Python backend
+    // First try loading from Python backend (with 3s timeout fallback to local CSV)
     try {
-        const res = await fetch(`${BACKEND_API_URL}/api/trials?condition=ai&n=${NUM_STUDY_TRIALS}`);
+        const res = await fetchWithTimeout(`${BACKEND_API_URL}/api/trials?condition=ai&n=${NUM_STUDY_TRIALS}`, {}, 3000);
         if (res.ok) {
             const data = await res.json();
             sampledRows = data.trials;
@@ -143,17 +157,17 @@ async function loadStudyTrials() {
     trials = builtTrials.map((t, idx) => ({ ...t, trial_index: idx + 1 }));
 }
 
-// 3. Request Live Model Prediction from Backend (+3 Bonus Points)
+// 3. Request Live Model Prediction from Backend (+3 Bonus Points) with 2.5s timeout fallback to CSV
 async function ensureModelPrediction(trial) {
     if (trial.is_attention_check || trial.live_inferred) {
         return;
     }
     try {
-        const res = await fetch(`${BACKEND_API_URL}/api/predict`, {
+        const res = await fetchWithTimeout(`${BACKEND_API_URL}/api/predict`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ img_id: trial.img_id })
-        });
+        }, 2500);
         if (res.ok) {
             const predData = await res.json();
             trial.ai_prediction = parseInt(predData.ai_prediction, 10);
@@ -303,6 +317,14 @@ nextBtn.addEventListener("click", () => {
 
 // 10. Start Study Button
 startStudyBtn.addEventListener("click", async () => {
+    const enteredName = participantNameInput ? participantNameInput.value.trim() : "";
+    if (!enteredName) {
+        if (startError) startError.classList.remove("hidden");
+        return;
+    }
+    if (startError) startError.classList.add("hidden");
+    participantId = `${enteredName} (${generatedUniqueId})`;
+
     startStudyBtn.disabled = true;
     startStudyBtn.textContent = "Loading Trials...";
 
